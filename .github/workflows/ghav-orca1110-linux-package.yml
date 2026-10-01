@@ -1,0 +1,63 @@
+name: GHAV Orca 1110 Linux package before
+on:
+  push:
+    branches:
+      - codex/ghav-orca1110-before
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout fixed historical Before source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 7b25a02d1cb7db898fead28f3e3acb1f6f83ba6e
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b
+        with:
+          run_install: false
+      - name: Set up Node.js and pnpm store
+        id: node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+      - name: Fixed-context witness
+        run: |
+          echo "source_sha=$(git rev-parse HEAD)"
+          echo "evaluation_sha=$GITHUB_SHA"
+          echo "runner_image=$ImageOS/$ImageVersion"
+          echo "node_version=$(node --version)"
+          echo "pnpm_version=$(pnpm --version)"
+          echo 'pnpm_cache_hit=${{ steps.node.outputs.cache-hit }}'
+      - name: Install dependencies
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: pnpm install --frozen-lockfile
+      - name: Build app
+        run: pnpm build:release
+      - name: Package Linux AppImage and Debian package
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: pnpm exec electron-builder --config config/electron-builder.config.cjs --linux --publish never
+      - name: Verify and fingerprint complete package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/orca-linux.AppImage
+          find dist -maxdepth 1 -type f -name '*.deb' -size +0c | grep -q .
+          echo 'package_artifacts_begin'
+          find dist -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum
+          echo 'package_artifacts_end'
+          if test -f dist/linux-unpacked/resources/app.asar; then
+            sha256sum dist/linux-unpacked/resources/app.asar
+          fi

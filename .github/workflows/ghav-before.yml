@@ -1,0 +1,81 @@
+name: "ghav before: Mobile Checks"
+"on":
+  push:
+    branches:
+      - ghav/dev/23190
+    paths:
+      - .ghav/before
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      BUNDLE_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - name: Setup Ruby and fastlane
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: mobile
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Typecheck tests (ratchet)
+        run: pnpm run check:tests-typecheck
+      - name: Test
+        run: pnpm test
+      - name: Test iOS release version resolution
+        run: ruby fastlane/ios_release_version_test.rb
+      - name: Test TestFlight lane arguments
+        run: ruby fastlane/fastfile_testflight_arguments_test.rb
+      - name: Smoke-check the Fastfile
+        env:
+          FASTLANE_SKIP_UPDATE_CHECK: "1"
+          FASTLANE_OPT_OUT_USAGE: "1"
+        run: bundle exec fastlane lanes
+      - name: Lint
+        run: pnpm lint
+      - name: Check formatting
+        run: pnpm format:check
+  recording-pin:
+    name: RPC recording pin
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check the recording pin is reachable
+        shell: bash
+        run: pnpm exec tsx scripts/rpc-recording-pin-guard.mts ancestry
+      - name: Reproduce the corpus from the pinned tree
+        shell: bash
+        env:
+          PIN_GUARD_BASE: 711bacd408731d9517b3d06d7572d06a2568cbae
+        run: |
+          if [ -n "$PIN_GUARD_BASE" ]; then
+            pnpm exec tsx scripts/rpc-recording-pin-guard.mts reproduce --if-changed-since "$PIN_GUARD_BASE"
+          else
+            pnpm exec tsx scripts/rpc-recording-pin-guard.mts reproduce
+          fi

@@ -7,6 +7,8 @@
   "ignorePatterns": [
     "cloud/**",
     ".github/actions/cloud-sql-rollout-lease/**",
-    ".anti-slop-plugin/**"
+    ".anti-slop-plugin/**",
+    ".github/workflows/ghav-*.yml",
+    ".oxfmtrc.json"
   ]
 }

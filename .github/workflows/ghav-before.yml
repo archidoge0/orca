@@ -1,0 +1,178 @@
+name: "ghav before: PR Checks"
+"on":
+  push:
+    branches:
+      - ghav/dev/23314
+    paths:
+      - .ghav/before
+permissions:
+  contents: read
+jobs:
+  static_analysis:
+    name: static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - name: Lint
+        run: pnpm exec oxlint --format github
+      - name: Reject low-evidence patterns
+        run: pnpm run audit:anti-slop
+      - name: Enforce focused code-quality plugins
+        run: pnpm run audit:code-quality:native
+      - name: Enforce type-aware code-quality baseline
+        run: pnpm run audit:code-quality:type-aware
+      - uses: ./.github/actions/install-mobile-dependencies
+        if: "false"
+      - name: Check Zustand selector fan-out budget
+        run: pnpm run check:zustand-selector-fanout
+      - name: Check reliability gate manifest
+        run: pnpm run check:reliability-gates
+      - name: Enforce dead design-system classes
+        run: pnpm run check:dead-classes
+      - name: Enforce max-lines ratchet
+        run: pnpm run check:max-lines-ratchet
+      - name: Enforce ts-nocheck ratchet
+        run: pnpm run check:ts-nocheck-ratchet
+      - name: Enforce runtime Electron-import ratchet
+        run: pnpm run check:runtime-electron-ratchet
+      - name: Boot orcad and round-trip a terminal
+        run: pnpm run smoke:orcad-terminal
+      - name: Verify the generated RPC params catalog
+        run: pnpm run verify:rpc-params-catalog
+      - name: Verify bundled skill guides
+        run: pnpm run verify:bundled-skill-guides
+      - name: Verify skill freshness manifest
+        run: pnpm run verify:skill-bundle-manifest
+      - name: Verify localization catalog
+        run: pnpm run verify:localization-catalog
+      - name: Verify runtime-required localization catalog
+        run: pnpm run verify:localization-runtime-catalog
+      - name: Verify localization extraction
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Detection failures run the full check; renames retain the removed input path.
+          if git diff --name-only --no-renames -z --merge-base "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/localization-changes" &&
+            scope="$(node config/scripts/localization-extraction-change-scope.mjs "$RUNNER_TEMP/localization-changes")" && [ "$scope" = false ]; then
+            echo "Localization extraction inputs are unchanged."
+          else
+            pnpm run verify:localization-extraction
+          fi
+      - name: Verify localization coverage
+        run: pnpm run verify:localization-coverage
+      - name: Guard against project-owned .d.ts in preload/shared
+        run: |
+          matches=$(find src/preload src/shared -name '*.d.ts' 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Project-owned .d.ts files are not allowed under src/preload or src/shared."
+            echo "Move type declarations into a .ts file so skipLibCheck does not hide errors."
+            echo "See .github/CONTRIBUTING.md#type-declarations-prefer-ts-over-dts."
+            echo "Found:"
+            echo "$matches"
+            exit 1
+          fi
+      - name: Check feature wall asset budget
+        run: pnpm check:feature-wall-assets
+      - name: Verify macOS entitlements
+        run: pnpm verify:macos-entitlements
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/electron-builder
+          key: electron-builder-linux-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            electron-builder-linux-
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: electron
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - uses: ./.github/actions/install-mobile-dependencies
+      - name: Verify Linux daemon shutdown descendant cleanup
+        env:
+          ORCA_BACKGROUND_LAUNCH: "1"
+        run: node config/scripts/run-daemon-shutdown-descendants-docker.mjs
+      - name: Test Linux Electron lifecycle boundary
+        run: xvfb-run --auto-servernum pnpm exec vitest run --config config/vitest.config.ts --no-file-parallelism src/main/browser/browser-client-page-renderer-lifecycle.electron.test.ts src/main/browser/browser-route-tcp-egress.electron.test.ts src/main/browser/browser-route-webrtc-egress.electron.test.ts src/main/browser/browser-route-h3-egress.electron.test.ts src/main/browser/browser-route-dns-prefetch.electron.test.ts
+      - name: Build package inputs
+        run: |
+          status=0
+          pnpm run build:cli || status=1
+
+          scripts=(build:relay build:electron-vite:parallel)
+          pids=()
+          for script in "${scripts[@]}"; do
+            pnpm run "$script" &
+            pids+=("$!")
+          done
+
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          exit "$status"
+      - name: Project web client from renderer build
+        run: pnpm run build:web-from-renderer
+      - name: Build mobile web bundle
+        run: pnpm run build:mobile-web
+      - name: Build native components
+        run: pnpm run build:native
+      - name: Install Linux package tooling
+        run: sudo apt-get update && sudo apt-get install -y cpio rpm
+      - name: Package unpacked app
+        env:
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: "1"
+        run: pnpm exec electron-builder --config config/electron-builder.config.cjs --linux AppImage deb rpm --x64 --publish never --config.deb.compression=gz --config.rpm.compression=gzip
+      - name: Verify root-package marker payloads
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          deb="dist/orca-ide_${version}_amd64.deb"
+          rpm="dist/orca-ide-${version}.x86_64.rpm"
+          test -s "$deb"
+          test -s "$rpm"
+          deb_marker="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - ./opt/Orca/resources/package-type)"
+          rpm_marker="$(rpm2cpio "$rpm" | cpio --quiet --extract --to-stdout ./opt/Orca/resources/package-type)"
+          [[ "$deb_marker" == deb ]] || { echo "Expected deb marker, got: $deb_marker"; exit 1; }
+          [[ "$rpm_marker" == rpm ]] || { echo "Expected rpm marker, got: $rpm_marker"; exit 1; }
+      - uses: ./.github/actions/prepare-linux-package-fixture
+        id: shutdown-fixture-cache
+        with:
+          fixture: headless-serve-shutdown
+      - name: Verify headless serve signal shutdown
+        env:
+          ORCA_SHUTDOWN_FIXTURE_CACHE_IMAGE: ${{ steps.shutdown-fixture-cache.outputs.image }}
+        run: node config/scripts/run-headless-serve-shutdown-docker.mjs --appimage dist/orca-linux.AppImage --all-entrypoints
+      - uses: ./.github/actions/prepare-linux-package-fixture
+        id: cli-fixture-cache
+        with:
+          fixture: cli-launch-contract
+      - name: Verify Linux CLI launch contract
+        env:
+          ORCA_CLI_FIXTURE_CACHE_IMAGE: ${{ steps.cli-fixture-cache.outputs.image }}
+        run: node config/scripts/run-linux-cli-launch-contract-docker.mjs --appimage dist/orca-linux.AppImage
+      - name: Smoke packaged CLI
+        run: node config/scripts/smoke-packaged-cli.mjs --app-dir=dist/linux-unpacked
+      - name: Smoke packaged hang watchdog worker
+        run: xvfb-run --auto-servernum node config/scripts/smoke-packaged-hang-watchdog-worker.mjs --app-dir=dist/linux-unpacked

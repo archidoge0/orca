@@ -6,7 +6,7 @@ inputs:
     required: true
   save-cache:
     description: Build and save a missing fixture on the default branch.
-    default: 'false'
+    default: "false"
 outputs:
   image:
     description: Loaded image to use as a Docker build cache, or empty on a cache miss.
@@ -21,14 +21,14 @@ runs:
       with:
         path: ${{ runner.temp }}/orca-package-fixtures/${{ inputs.fixture }}.tar
         key: linux-package-fixture-v1-${{ runner.os }}-${{ runner.arch }}-linux-amd64-${{ inputs.fixture }}-${{ hashFiles(format('config/docker/{0}/**', inputs.fixture), '.github/actions/prepare-linux-package-fixture/action.yml') }}
-
     - name: Load or seed fixture build cache
       id: image
-      shell: bash
+      shell: bash /home/runner/ghav-bin/trace-shell.sh {0}
       env:
         FIXTURE: ${{ inputs.fixture }}
         SAVE_CACHE: ${{ inputs.save-cache }}
         CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        GHAV_SUB: 01-Load_or_seed_fixture_build_cache
       run: |
         set -euo pipefail
         case "$FIXTURE" in
@@ -53,7 +53,6 @@ runs:
         docker save --output "$archive" "$image"
         echo "image=$image" >> "$GITHUB_OUTPUT"
         echo 'built=true' >> "$GITHUB_OUTPUT"
-
     - name: Save fixture image
       if: inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true' && steps.image.outputs.built == 'true'
       uses: actions/cache/save@v5

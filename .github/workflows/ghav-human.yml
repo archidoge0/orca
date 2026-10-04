@@ -1,0 +1,145 @@
+name: "ghav human: E2E"
+permissions:
+  contents: read
+"on":
+  push:
+    branches:
+      - ghav/dev/20367
+    paths:
+      - .ghav/human
+jobs:
+  build:
+    name: build e2e app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ '' || github.ref }}
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+      - name: Build E2E outputs
+        env:
+          VITE_EXPOSE_STORE: "true"
+        run: |
+          status=0
+          pnpm run build:relay &
+          relay_pid=$!
+          npx electron-vite build --mode e2e || status=1
+          pnpm run build:web-from-renderer || status=1
+          wait "$relay_pid" || status=1
+          exit "$status"
+      - name: Upload E2E build output
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-build-out
+          path: out/
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+  prepare-native-cache:
+    name: prepare Electron native cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ '' || github.ref }}
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: electron
+  e2e:
+    name: e2e ${{ matrix.shard_name }}
+    needs:
+      - build
+      - prepare-native-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1/14
+            shard_name: 1-of-14
+          - shard: 2/14
+            shard_name: 2-of-14
+          - shard: 3/14
+            shard_name: 3-of-14
+          - shard: 4/14
+            shard_name: 4-of-14
+          - shard: 5/14
+            shard_name: 5-of-14
+          - shard: 6/14
+            shard_name: 6-of-14
+          - shard: 7/14
+            shard_name: 7-of-14
+          - shard: 8/14
+            shard_name: 8-of-14
+          - shard: 9/14
+            shard_name: 9-of-14
+          - shard: 10/14
+            shard_name: 10-of-14
+          - shard: 11/14
+            shard_name: 11-of-14
+          - shard: 12/14
+            shard_name: 12-of-14
+          - shard: 13/14
+            shard_name: 13-of-14
+          - shard: 14/14
+            shard_name: 14-of-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ '' || github.ref }}
+      - name: Install native build and headless UI tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential fonts-noto-cjk python3 ripgrep xvfb zsh openbox x11-utils
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: electron
+      - name: Download E2E build output
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-build-out
+          path: out/
+      - name: Balance E2E shard from timing evidence
+        env:
+          ORCA_BACKGROUND_LAUNCH: "1"
+          SKIP_BUILD: "1"
+          ORCA_E2E_FORWARD_APP_LOGS: "1"
+          ORCA_E2E_WEB_CLIENT: "1"
+          ORCA_RELAY_PATH: ${{ github.workspace }}/out/relay
+        run: |
+          mkdir -p ci-shards
+          pnpm exec playwright test --config tests/playwright.config.ts --project=electron-headless --list --reporter=json > ci-shards/discovery.json
+          export ORCA_SHARD_SOURCE_SHA="$(git rev-parse HEAD)"
+          node config/scripts/ci-e2e-shard-plan.mjs ci-shards/discovery.json '${{ matrix.shard }}' ci-shards
+          pnpm exec playwright test --config tests/playwright.config.ts --project=electron-headless --test-list=ci-shards/selected.txt --list --reporter=json > ci-shards/selected-discovery.json
+          node config/scripts/ci-e2e-shard-plan.mjs --verify ci-shards/assignment.json ci-shards/selected-discovery.json
+      - name: Run E2E tests (${{ matrix.shard_name }})
+        run: xvfb-run --auto-servernum bash .github/scripts/e2e-with-window-manager.sh env SKIP_BUILD=1 ORCA_E2E_FORWARD_APP_LOGS=1 ORCA_E2E_WEB_CLIENT=1 ORCA_RELAY_PATH="$GITHUB_WORKSPACE/out/relay" pnpm run test:e2e --test-list=ci-shards/selected.txt
+      - name: Upload E2E shard assignment
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-shard-${{ matrix.shard_name }}-attempt-${{ github.run_attempt }}
+          path: ci-shards/
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Run worktree first-paint benchmark
+        if: matrix.shard == '1/14'
+        run: xvfb-run --auto-servernum bash .github/scripts/e2e-with-window-manager.sh env SKIP_BUILD=1 ORCA_E2E_FORWARD_APP_LOGS=1 pnpm exec playwright test tests/e2e/worktree-switch-first-paint.spec.ts --config tests/playwright.config.ts --project=electron-headful --workers=1
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces-${{ matrix.shard_name }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

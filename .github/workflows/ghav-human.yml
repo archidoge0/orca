@@ -1,0 +1,115 @@
+name: "ghav human: PR Checks"
+"on":
+  push:
+    branches:
+      - ghav/dev/16863
+    paths:
+      - .ghav/human
+permissions:
+  contents: read
+jobs:
+  static_analysis:
+    name: static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+      - name: Lint
+        run: pnpm exec oxlint --format github
+      - name: Enforce focused code-quality plugins
+        run: pnpm run audit:code-quality:native
+      - name: Enforce type-aware code-quality baseline
+        run: pnpm run audit:code-quality:type-aware
+      - name: Check Zustand selector fan-out budget
+        run: pnpm run check:zustand-selector-fanout
+      - name: Check reliability gate manifest
+        run: pnpm run check:reliability-gates
+      - name: Enforce max-lines ratchet
+        run: pnpm run check:max-lines-ratchet
+      - name: Enforce runtime Electron-import ratchet
+        run: pnpm run check:runtime-electron-ratchet
+      - name: Boot orcad and round-trip a terminal
+        run: pnpm run smoke:orcad-terminal
+      - name: Verify bundled skill guides
+        run: pnpm run verify:bundled-skill-guides
+      - name: Verify skill freshness manifest
+        run: pnpm run verify:skill-bundle-manifest
+      - name: Verify localization catalog
+        run: pnpm run verify:localization-catalog
+      - name: Verify localization extraction
+        run: pnpm run verify:localization-extraction
+      - name: Verify localization coverage
+        run: pnpm run verify:localization-coverage
+      - name: Guard against project-owned .d.ts in preload/shared
+        run: |
+          matches=$(find src/preload src/shared -name '*.d.ts' 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Project-owned .d.ts files are not allowed under src/preload or src/shared."
+            echo "Move type declarations into a .ts file so skipLibCheck does not hide errors."
+            echo "See .github/CONTRIBUTING.md#type-declarations-prefer-ts-over-dts."
+            echo "Found:"
+            echo "$matches"
+            exit 1
+          fi
+      - name: Check feature wall asset budget
+        run: pnpm check:feature-wall-assets
+      - name: Verify macOS entitlements
+        run: pnpm verify:macos-entitlements
+  test:
+    name: tests node ${{ matrix.node }} ${{ matrix.shard }}/${{ matrix.shard_total }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - "24"
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+        shard_total:
+          - 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+          node-version: ${{ matrix.node }}
+      - name: Install Electron package binary for tests
+        run: node config/scripts/install-electron-package-binary.mjs
+      - name: Test shard
+        run: |
+          pnpm exec vitest run --config config/vitest.config.ts \
+            --exclude=src/main/daemon/repro-13767-shell-ready-marker-lost-to-exec.test.ts \
+            --exclude=src/main/daemon/shell-ready.test.ts \
+            --exclude=src/main/daemon/node-pty-fd-leak.test.ts \
+            --exclude=src/main/providers/local-pty-shell-ready-zsh-launch-environment.test.ts \
+            --exclude=src/main/providers/__tests__/shell-ready-framework-example.test.ts \
+            --exclude=src/main/pty/omp-shell-wrapper.node-pty.test.ts \
+            --exclude=src/main/shell-startup-feature-channel.test.ts \
+            --exclude=src/main/terminal-history-fish-session.node-pty.test.ts \
+            --exclude=src/main/zsh-scoped-histfile.live-shell.test.ts \
+            --exclude=src/main/zsh-startup-hook-user-config-equivalence.live-shell.test.ts \
+            --exclude=src/main/zsh-wrapper-version-mismatch.live-shell.test.ts \
+            --exclude=src/renderer/src/components/terminal-pane/fish-color-scheme-child-stdin.node-pty.test.ts \
+            --exclude=src/shared/fish-query-reply-child-stdin.node-pty.test.ts \
+            --exclude=src/shared/pty-reply-echo-shapes.node-pty.test.ts \
+            --exclude=src/shared/startup-shell-portability.live-shell.test.ts \
+            --exclude=src/shared/posix-command-path-lookup.test.ts \
+            --exclude=tests/e2e/cross-version-wire/** \
+            --shard=${{ matrix.shard }}/${{ matrix.shard_total }}

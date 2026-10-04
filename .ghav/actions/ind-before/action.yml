@@ -63,7 +63,7 @@ runs:
       uses: actions/setup-node@v6
       with:
         node-version-file: package.json
-        cache: ${{ false && 'pnpm' || '' }}
+        cache: ${{ github.event_name != 'pull_request' && 'pnpm' || '' }}
         cache-dependency-path: ${{ inputs.cache-dependency-path }}
         package-manager-cache: false
 
@@ -73,14 +73,14 @@ runs:
       uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
-        cache: ${{ false && 'pnpm' || '' }}
+        cache: ${{ github.event_name != 'pull_request' && 'pnpm' || '' }}
         cache-dependency-path: ${{ inputs.cache-dependency-path }}
         package-manager-cache: false
 
     # PR-local stores compete with reusable build caches for the repository quota.
     - name: Resolve pnpm download store
       id: pnpm-store
-      if: true
+      if: github.event_name == 'pull_request'
       shell: bash
       env:
         LOCKFILE_HASH: ${{ hashFiles(inputs.cache-dependency-path) }}
@@ -93,7 +93,7 @@ runs:
 
     # Match setup-node's key and path so existing default-branch stores remain reusable.
     - name: Restore pnpm download store without saving
-      if: true
+      if: github.event_name == 'pull_request'
       uses: actions/cache/restore@v5
       with:
         path: ${{ steps.pnpm-store.outputs.path }}
@@ -154,7 +154,7 @@ runs:
 
     # pnpm checks the cached record's policy and validity; never bypass verification.
     - name: Save pnpm verification record on main
-      if: github.ref == 'refs/heads/main' && false && steps.verification-cache.outputs.key != '' && steps.verification-cache-restore.outputs.cache-hit != 'true'
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && steps.verification-cache.outputs.key != '' && steps.verification-cache-restore.outputs.cache-hit != 'true'
       continue-on-error: true
       uses: actions/cache/save@v5
       with:

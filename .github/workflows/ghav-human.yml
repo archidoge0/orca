@@ -1,0 +1,310 @@
+name: "ghav human: PR Checks"
+"on":
+  push:
+    branches:
+      - ghav/dev/23578
+    paths:
+      - .ghav/human
+permissions:
+  contents: read
+jobs:
+  static_analysis:
+    name: static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 50
+          persist-credentials: false
+      - uses: ./.ghav/actions/ind-pr-human
+        if: "true"
+        with:
+          native-runtime: node
+      - uses: ./.ghav/actions/ind-pr-human
+        if: "false"
+        with:
+          native-runtime: node
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - name: Lint
+        id: root-lint
+        background: true
+        run: pnpm exec oxlint --format github
+      - name: Reject low-evidence patterns
+        run: pnpm run audit:anti-slop
+      - wait: root-lint
+      - name: Enforce focused code-quality plugins
+        id: native-code-quality
+        background: true
+        run: pnpm run audit:code-quality:native
+      - name: Enforce type-aware code-quality baseline
+        run: pnpm run audit:code-quality:type-aware
+      - wait: native-code-quality
+      - uses: ./.github/actions/install-mobile-dependencies
+        if: "false"
+      - name: Enforce changed-code quality
+        id: changed-code-quality
+        background: true
+        run: pnpm run check:code-quality:changed -- "a68d62911edb0fc52934be06f112efe163dd0d18"
+      - name: Enforce React Doctor on changed lines
+        run: pnpm run check:react-doctor:changed -- "a68d62911edb0fc52934be06f112efe163dd0d18"
+      - wait: changed-code-quality
+      - name: Check Zustand selector fan-out budget
+        run: pnpm run check:zustand-selector-fanout
+      - name: Check reliability gate manifest
+        run: pnpm run check:reliability-gates
+      - name: Enforce dead design-system classes
+        run: pnpm run check:dead-classes
+      - name: Check VM runtime rollback compatibility
+        env:
+          BASE_SHA: a68d62911edb0fc52934be06f112efe163dd0d18
+        run: |
+          DIFF_BASE="$(node config/scripts/git-pull-request-diff-base.mjs "$BASE_SHA")"
+          if git diff --quiet "$DIFF_BASE" HEAD -- \
+            src/shared/ephemeral-vm-runtime-store.ts \
+            src/shared/ephemeral-vm-runtime-feature-store.ts \
+            src/shared/ephemeral-vm-runtime-rollback-projection.ts \
+            src/shared/ephemeral-vm-runtimes.ts \
+            src/shared/ephemeral-vm-recipes.ts \
+            src/shared/orca-yaml-hook-types.ts \
+            src/main/ephemeral-vm-runtime-service.ts \
+            src/main/ephemeral-vm-runtime-provisioning-persistence.ts \
+            src/main/ephemeral-vm-failed-start-cleanup.ts; then
+            echo "VM runtime persistence is unchanged."
+            exit 0
+          fi
+          node config/scripts/run-ephemeral-vm-runtime-store-rollback-repro.mjs \
+            config/scripts/ephemeral-vm-runtime-store-cross-version.test.ts
+      - name: Enforce max-lines ratchet
+        run: pnpm run check:max-lines-ratchet
+      - name: Enforce ts-nocheck ratchet
+        run: pnpm run check:ts-nocheck-ratchet
+      - name: Enforce runtime Electron-import ratchet
+        run: pnpm run check:runtime-electron-ratchet
+      - name: Verify localization extraction
+        id: localization-extraction
+        background: true
+        env:
+          BASE_SHA: a68d62911edb0fc52934be06f112efe163dd0d18
+        run: |
+          # Detection failures run the full check; renames retain the removed input path.
+          DIFF_BASE="$(node config/scripts/git-pull-request-diff-base.mjs "$BASE_SHA")"
+          if git diff --name-only --no-renames -z "$DIFF_BASE" HEAD > "$RUNNER_TEMP/localization-changes" &&
+            scope="$(node config/scripts/localization-extraction-change-scope.mjs "$RUNNER_TEMP/localization-changes")" && [ "$scope" = false ]; then
+            echo "Localization extraction inputs are unchanged."
+          else
+            pnpm run verify:localization-extraction
+          fi
+      - name: Boot orcad and round-trip a terminal
+        env:
+          BASE_SHA: a68d62911edb0fc52934be06f112efe163dd0d18
+          ORCA_BACKGROUND_LAUNCH: "1"
+        run: |
+          # Detection failures run the smoke; renames retain the removed input path.
+          DIFF_BASE="$(node config/scripts/git-pull-request-diff-base.mjs "$BASE_SHA")"
+          if git diff --name-only --no-renames -z "$DIFF_BASE" HEAD > "$RUNNER_TEMP/orcad-smoke-changes" &&
+            scope="$(node config/scripts/orcad-terminal-smoke-change-scope.mjs "$RUNNER_TEMP/orcad-smoke-changes")" && [ "$scope" = false ]; then
+            echo "Orcad terminal smoke inputs are unchanged."
+          else
+            pnpm run smoke:orcad-terminal
+          fi
+      - name: Verify the generated RPC params catalog
+        run: pnpm run verify:rpc-params-catalog
+      - name: Verify bundled skill guides
+        run: pnpm run verify:bundled-skill-guides
+      - name: Verify skill freshness manifest
+        run: pnpm run verify:skill-bundle-manifest
+      - name: Verify localization catalogs
+        id: localization-catalogs
+        background: true
+        run: pnpm run verify:localization-catalogs
+      - name: Verify localization coverage
+        run: pnpm run verify:localization-coverage
+      - wait:
+          - localization-catalogs
+          - localization-extraction
+      - name: Guard against project-owned .d.ts in preload/shared
+        run: |
+          matches=$(find src/preload src/shared -name '*.d.ts' 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Project-owned .d.ts files are not allowed under src/preload or src/shared."
+            echo "Move type declarations into a .ts file so skipLibCheck does not hide errors."
+            echo "See .github/CONTRIBUTING.md#type-declarations-prefer-ts-over-dts."
+            echo "Found:"
+            echo "$matches"
+            exit 1
+          fi
+      - name: Check feature wall asset budget
+        run: pnpm check:feature-wall-assets
+      - name: Verify macOS entitlements
+        run: pnpm verify:macos-entitlements
+  typecheck:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.ghav/actions/ind-pr-human
+      - name: Cache TypeScript incremental state
+        uses: actions/cache@v5
+        with:
+          path: config/*.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'config/tsconfig*.json') }}-a68d62911edb0fc52934be06f112efe163dd0d18
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'config/tsconfig*.json') }}-
+      - run: pnpm run typecheck
+  package:
+    name: package
+    needs:
+      - static_analysis
+      - typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Cache electron-builder downloads
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/electron-builder
+          key: electron-builder-linux-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            electron-builder-linux-
+      - uses: ./.ghav/actions/ind-pr-human
+        with:
+          native-runtime: electron
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            mobile/pnpm-lock.yaml
+      - uses: ./.github/actions/install-mobile-dependencies
+      - name: Verify Linux daemon shutdown descendant cleanup
+        env:
+          ORCA_BACKGROUND_LAUNCH: "1"
+        run: node config/scripts/run-daemon-shutdown-descendants-docker.mjs
+      - name: Test Linux Electron lifecycle boundary
+        run: xvfb-run --auto-servernum pnpm exec vitest run --config config/vitest.config.ts --no-file-parallelism src/main/browser/browser-client-page-renderer-lifecycle.electron.test.ts src/main/browser/browser-route-tcp-egress.electron.test.ts src/main/browser/browser-route-webrtc-egress.electron.test.ts src/main/browser/browser-route-h3-egress.electron.test.ts src/main/browser/browser-route-dns-prefetch.electron.test.ts
+      - uses: ./.github/actions/prepare-linux-package-fixture
+        id: shutdown-fixture-cache
+        background: true
+        with:
+          fixture: headless-serve-shutdown
+      - uses: ./.github/actions/prepare-linux-package-fixture
+        id: cli-fixture-cache
+        background: true
+        with:
+          fixture: cli-launch-contract
+      - name: Install Linux package tooling
+        id: linux-package-tools
+        background: true
+        run: sudo apt-get update && sudo apt-get install -y cpio rpm
+      - name: Build package inputs
+        run: |
+          status=0
+          pnpm run build:cli || status=1
+
+          scripts=(build:relay build:electron-vite:parallel)
+          pids=()
+          for script in "${scripts[@]}"; do
+            pnpm run "$script" &
+            pids+=("$!")
+          done
+
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          exit "$status"
+      - name: Project web client from renderer build
+        id: web-client
+        background: true
+        run: pnpm run build:web-from-renderer
+      - name: Build mobile web bundle
+        run: pnpm run build:mobile-web
+      - name: Build native components
+        run: pnpm run build:native
+      - wait:
+          - linux-package-tools
+          - web-client
+      - name: Package unpacked app
+        env:
+          ORCA_BACKGROUND_LAUNCH: "1"
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: "1"
+        run: |
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --linux dir --x64 --publish never
+          node config/scripts/package-linux-formats.mjs
+      - name: Verify root-package marker payloads
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          deb="dist/orca-ide_${version}_amd64.deb"
+          rpm="dist/orca-ide-${version}.x86_64.rpm"
+          test -s "$deb"
+          test -s "$rpm"
+          deb_marker="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - ./opt/Orca/resources/package-type)"
+          rpm_marker="$(rpm2cpio "$rpm" | cpio --quiet --extract --to-stdout ./opt/Orca/resources/package-type)"
+          [[ "$deb_marker" == deb ]] || { echo "Expected deb marker, got: $deb_marker"; exit 1; }
+          [[ "$rpm_marker" == rpm ]] || { echo "Expected rpm marker, got: $rpm_marker"; exit 1; }
+      - wait: shutdown-fixture-cache
+      - name: Verify headless serve signal shutdown
+        env:
+          ORCA_SHUTDOWN_FIXTURE_CACHE_IMAGE: ${{ steps.shutdown-fixture-cache.outputs.image }}
+        run: node config/scripts/run-headless-serve-shutdown-docker.mjs --appimage dist/orca-linux.AppImage --all-entrypoints
+      - wait: cli-fixture-cache
+      - name: Verify Linux CLI launch contract
+        env:
+          ORCA_CLI_FIXTURE_CACHE_IMAGE: ${{ steps.cli-fixture-cache.outputs.image }}
+        run: node config/scripts/run-linux-cli-launch-contract-docker.mjs --appimage dist/orca-linux.AppImage
+      - name: Smoke packaged CLI
+        run: node config/scripts/smoke-packaged-cli.mjs --app-dir=dist/linux-unpacked
+      - name: Smoke packaged hang watchdog worker
+        run: xvfb-run --auto-servernum node config/scripts/smoke-packaged-hang-watchdog-worker.mjs --app-dir=dist/linux-unpacked
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORCA_BACKGROUND_LAUNCH: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.ghav/actions/ind-human
+        with:
+          native-runtime: node
+          node-version: "24"
+          cache-electron-package: "true"
+      - name: Populate shared Electron archive
+        run: node config/scripts/install-electron-package-binary.mjs
+      - uses: ./.github/actions/prepare-git-compatibility
+      - name: Cache TypeScript incremental state
+        id: typecheck-cache
+        uses: actions/cache@v5
+        with:
+          path: config/*.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'config/tsconfig*.json') }}-${{ github.sha }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'config/tsconfig*.json') }}-
+      - name: Refresh TypeScript state for this commit
+        if: steps.typecheck-cache.outputs.cache-hit != 'true'
+        run: pnpm run typecheck
+  warm-linux-arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      ORCA_BACKGROUND_LAUNCH: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.ghav/actions/ind-human
+        with:
+          native-runtime: node
+          node-version: "24"
+          cache-electron-package: "true"
+      - name: Populate shared Electron archive
+        run: node config/scripts/install-electron-package-binary.mjs
+      - name: Verify native cache is usable
+        run: node config/scripts/ensure-native-runtime.mjs --check-only

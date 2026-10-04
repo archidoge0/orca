@@ -1,51 +1,34 @@
-name: PR Checks
-
-on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-
-concurrency:
-  group: pr-checks-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
+name: "ghav human: PR Checks"
+"on":
+  push:
+    branches:
+      - ghav/dev/10989
+    paths:
+      - .ghav/human
 permissions:
   contents: read
-
 jobs:
   static_analysis:
     name: static analysis
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - uses: ./.github/actions/install-node-dependencies
-
       - name: Lint
         run: pnpm exec oxlint --format github
-
       - name: Check styled scrollbars
         run: pnpm check:styled-scrollbars
-
       - name: Check reliability gate manifest
         run: pnpm run check:reliability-gates
-
       - name: Enforce max-lines ratchet
         run: pnpm run check:max-lines-ratchet
-
       - name: Verify bundled skill guides
         run: pnpm run verify:bundled-skill-guides
-
       - name: Verify skill freshness manifest
         run: pnpm run verify:skill-bundle-manifest
-
       - name: Guard against project-owned .d.ts in preload/shared
         run: |
           matches=$(find src/preload src/shared -name '*.d.ts' 2>/dev/null || true)
@@ -57,38 +40,28 @@ jobs:
             echo "$matches"
             exit 1
           fi
-
       - name: Check feature wall asset budget
         run: pnpm check:feature-wall-assets
-
       - name: Verify macOS entitlements
         run: pnpm verify:macos-entitlements
-
   typecheck:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - uses: ./.github/actions/install-node-dependencies
-
       - run: pnpm typecheck
-
   git_compatibility:
     name: Git compatibility
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - uses: ./.github/actions/install-node-dependencies
-
       - name: Verify Git binary compatibility matrix
         run: |
           pids=()
@@ -126,24 +99,19 @@ jobs:
             wait "$pid" || status=1
           done
           exit "$status"
-
   shell_contracts:
     name: shell contracts
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
-
       - uses: ./.github/actions/install-node-dependencies
         with:
           native-runtime: node
-
       - name: Test real shell contracts
         run: |
           pnpm exec vitest run --config config/vitest.config.ts \
@@ -153,28 +121,39 @@ jobs:
             src/main/providers/__tests__/shell-ready-framework-example.test.ts \
             src/main/pty/omp-shell-wrapper.node-pty.test.ts \
             src/shared/posix-command-path-lookup.test.ts
-
   test:
     name: tests ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - uses: ./.github/actions/install-node-dependencies
         with:
           native-runtime: node
-
       - name: Install Electron package binary for tests
         run: node config/scripts/install-electron-package-binary.mjs
-
       - name: Test shard
         run: |
           pnpm exec vitest run --config config/vitest.config.ts \
@@ -185,17 +164,14 @@ jobs:
             --exclude=src/main/pty/omp-shell-wrapper.node-pty.test.ts \
             --exclude=src/shared/posix-command-path-lookup.test.ts \
             --shard=${{ matrix.shard }}/${{ strategy.job-total }}
-
   package:
     name: package
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - name: Cache electron-builder downloads
         uses: actions/cache@v5
         with:
@@ -205,11 +181,9 @@ jobs:
           key: electron-builder-linux-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
             electron-builder-linux-
-
       - uses: ./.github/actions/install-node-dependencies
         with:
           native-runtime: electron
-
       - name: Build package inputs
         run: |
           status=0
@@ -226,21 +200,16 @@ jobs:
             wait "$pid" || status=1
           done
           exit "$status"
-
       - name: Project web client from renderer build
         run: pnpm run build:web-from-renderer
-
       - name: Build native components
         run: pnpm run build:native
-
       - name: Package unpacked app
         env:
-          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: '1'
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: "1"
         run: pnpm exec electron-builder --config config/electron-builder.config.cjs --dir
-
       - name: Smoke packaged CLI
         run: node config/scripts/smoke-packaged-cli.mjs --app-dir=dist/linux-unpacked
-
   verify:
     if: always()
     needs:
@@ -251,7 +220,6 @@ jobs:
       - test
       - package
     runs-on: ubuntu-latest
-
     steps:
       - name: Require successful checks
         env:

@@ -1,0 +1,78 @@
+name: "ghav before: Unit tests"
+"on":
+  push:
+    branches:
+      - ghav/dev/24476
+    paths:
+      - .ghav/before
+permissions:
+  contents: read
+jobs:
+  test:
+    name: tests node ${{ matrix.node }} ${{ matrix.shard.index }}/${{ matrix.shard.count }}
+    runs-on: ${{ 'ubuntu-24.04-arm' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON('["24"]') }}
+        shard: ${{ fromJSON('[{"index":1,"count":5},{"index":2,"count":5},{"index":3,"count":5},{"index":4,"count":5},{"index":5,"count":5}]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+          node-version: ${{ matrix.node }}
+          cache-electron-package: "true"
+      - name: Install Electron package binary for tests
+        run: node config/scripts/install-electron-package-binary.mjs
+      - name: Test shard
+        env:
+          ORCA_BALANCE_UNIT_SHARDS: "1"
+          ORCA_BACKGROUND_LAUNCH: "1"
+        run: |
+          ORCA_SHARD_SOURCE_SHA="$(git rev-parse HEAD)"
+          export ORCA_SHARD_SOURCE_SHA
+          pnpm exec vitest run --config config/vitest.config.ts \
+            --shard=${{ matrix.shard.index }}/${{ matrix.shard.count }} \
+            ${{ 'ubuntu-24.04-arm' == 'ubuntu-24.04-arm' && '--maxWorkers=4' || '' }}
+      - name: Upload unit shard assignment
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-shard-node-${{ matrix.node }}-${{ matrix.shard.index }}-attempt-${{ github.run_attempt }}
+          path: ci-shards/
+          retention-days: 14
+          if-no-files-found: warn
+  relay_integration:
+    name: relay integration node ${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON('["24"]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+          node-version: ${{ matrix.node }}
+          cache-electron-package: "true"
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            cloud/pnpm-lock.yaml
+      - name: Install relay integration dependencies
+        working-directory: cloud
+        run: |
+          npx --yes pnpm@10.24.0 --filter '@orca-cloud/relay...' install --frozen-lockfile --ignore-scripts
+          npx --yes pnpm@10.24.0 --filter '@orca-cloud/relay^...' build
+      - name: Test relay integration contracts
+        env:
+          ORCA_BACKGROUND_LAUNCH: "1"
+        run: pnpm exec vitest run --config config/vitest.config.ts tests/e2e/relay-region-compatibility.unit.test.ts tests/e2e/relay-region-correction.unit.test.ts
